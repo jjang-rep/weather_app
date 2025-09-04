@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { MainLayout } from '@/components/layout/main-layout';
 import { WeatherCard } from '@/components/weather/weather-card';
 import { ForecastCard } from '@/components/weather/forecast-card';
 import { HourlyForecast } from '@/components/weather/hourly-forecast';
+import { RefreshControls } from '@/components/weather/refresh-controls';
+import { LoadingIndicator } from '@/components/weather/loading-indicator';
 import { getCurrentWeather, getWeatherForecast, WeatherData, ForecastData } from '@/lib/weather-api';
 import { useWeather } from '@/contexts/weather-context';
 
@@ -14,9 +14,19 @@ export default function Home() {
   const [city, setCity] = useState('Seoul');
   const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
   const [forecastData, setForecastData] = useState<ForecastData | null>(null);
-  const { isLoading, setIsLoading, error, setError } = useWeather();
+  const { 
+    isLoading, 
+    setIsLoading, 
+    error, 
+    setError, 
+    lastUpdated, 
+    setLastUpdated,
+    setRefreshCallback,
+    retryCount,
+    setRetryCount
+  } = useWeather();
 
-  const fetchWeather = useCallback(async (searchCity: string) => {
+  const fetchWeather = useCallback(async (searchCity: string, useCache: boolean = true) => {
     if (!searchCity.trim()) return;
     
     setIsLoading(true);
@@ -25,19 +35,38 @@ export default function Home() {
     try {
       // 현재 날씨와 예보 데이터를 병렬로 가져오기
       const [currentWeather, forecast] = await Promise.all([
-        getCurrentWeather(searchCity),
-        getWeatherForecast(searchCity)
+        getCurrentWeather(searchCity, useCache),
+        getWeatherForecast(searchCity, useCache)
       ]);
       
       setWeatherData(currentWeather);
       setForecastData(forecast);
       setCity(searchCity);
+      setLastUpdated(new Date());
+      setRetryCount(0); // 성공 시 재시도 카운트 리셋
     } catch (err) {
-      setError(err instanceof Error ? err.message : '날씨 데이터를 가져오는데 실패했습니다.');
+      const errorMessage = err instanceof Error ? err.message : '날씨 데이터를 가져오는데 실패했습니다.';
+      setError(errorMessage);
+      setRetryCount(retryCount + 1);
     } finally {
       setIsLoading(false);
     }
-  }, [setIsLoading, setError]);
+  }, [setIsLoading, setError, setLastUpdated, setRetryCount]);
+
+  // 수동 새로고침 함수 (캐시 무시)
+  const handleManualRefresh = useCallback(() => {
+    fetchWeather(city, false);
+  }, [city, fetchWeather]);
+
+  // 재시도 함수
+  const handleRetry = useCallback(() => {
+    fetchWeather(city, false);
+  }, [city, fetchWeather]);
+
+  // 자동 새로고침 콜백을 context에 등록
+  useEffect(() => {
+    setRefreshCallback(() => fetchWeather(city, false));
+  }, [setRefreshCallback, city, fetchWeather]);
 
   useEffect(() => {
     fetchWeather(city);
@@ -61,37 +90,38 @@ export default function Home() {
             </p>
           </div>
 
-          {/* 로딩 상태 */}
-          {isLoading && (
-            <Card className="max-w-md mx-auto">
-              <CardContent className="pt-6 text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-                <p className="text-muted-foreground">날씨 데이터를 가져오는 중...</p>
-              </CardContent>
-            </Card>
-          )}
+          {/* 새로고침 컨트롤 */}
+          <RefreshControls 
+            onManualRefresh={handleManualRefresh}
+            isRefreshing={isLoading}
+          />
 
-          {/* 에러 메시지 */}
-          {error && (
-            <Alert variant="destructive" className="max-w-md mx-auto">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+          {/* 로딩 및 에러 상태 */}
+          <LoadingIndicator
+            isLoading={isLoading}
+            error={error}
+            retryCount={retryCount}
+            onRetry={handleRetry}
+          />
 
           {/* 날씨 정보 표시 */}
           {weatherData && !isLoading && (
             <div className="space-y-6">
+              {/* 현재 날씨 카드 */}
               <WeatherCard weatherData={weatherData} />
               
-              {/* 시간별 예보 */}
-              {forecastData && (
-                <HourlyForecast forecastData={forecastData} />
-              )}
-              
-              {/* 5일 예보 */}
-              {forecastData && (
-                <ForecastCard forecastData={forecastData} />
-              )}
+              {/* 오늘 날씨와 15일 예보를 세로로 배치 */}
+              <div className="w-full max-w-2xl mx-auto space-y-6">
+                {/* 시간별 예보 */}
+                {forecastData && (
+                  <HourlyForecast forecastData={forecastData} />
+                )}
+                
+                {/* 15일 예보 */}
+                {forecastData && (
+                  <ForecastCard forecastData={forecastData} />
+                )}
+              </div>
             </div>
           )}
 

@@ -54,58 +54,95 @@ import { weatherCache, getCacheKey } from './cache';
 // API 엔드포인트 - 백엔드 프록시 사용
 const API_BASE_URL = '/api/weather';
 
-export async function getCurrentWeather(city: string): Promise<WeatherData> {
-  const cacheKey = getCacheKey('current', city);
+// 지수 백오프를 사용한 재시도 함수
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 1000
+): Promise<T> {
+  let lastError: Error;
   
-  // 캐시에서 데이터 확인
-  const cachedData = weatherCache.get<WeatherData>(cacheKey);
-  if (cachedData) {
-    console.log('Using cached current weather data for', city);
-    return cachedData;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error as Error;
+      
+      if (attempt === maxRetries) {
+        throw lastError;
+      }
+      
+      // 지수 백오프: 1초, 2초, 4초, 8초...
+      const delay = baseDelay * Math.pow(2, attempt);
+      console.log(`API 호출 실패, ${delay}ms 후 재시도... (${attempt + 1}/${maxRetries})`);
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
   }
-
-  const response = await fetch(
-    `${API_BASE_URL}?city=${encodeURIComponent(city)}&type=current`
-  );
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `Failed to fetch weather data: ${response.statusText}`);
-  }
-
-  const data = await response.json();
   
-  // 캐시에 저장 (5분간 유효)
-  weatherCache.set(cacheKey, data, 5 * 60 * 1000);
-  
-  return data;
+  throw lastError!;
 }
 
-export async function getWeatherForecast(city: string): Promise<ForecastData> {
+export async function getCurrentWeather(city: string, useCache: boolean = true): Promise<WeatherData> {
+  const cacheKey = getCacheKey('current', city);
+  
+  // 캐시에서 데이터 확인 (캐시 사용이 활성화된 경우에만)
+  if (useCache) {
+    const cachedData = weatherCache.get<WeatherData>(cacheKey);
+    if (cachedData) {
+      console.log('Using cached current weather data for', city);
+      return cachedData;
+    }
+  }
+
+  return retryWithBackoff(async () => {
+    const response = await fetch(
+      `${API_BASE_URL}?city=${encodeURIComponent(city)}&type=current`
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to fetch weather data: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    
+    // 캐시에 저장 (5분간 유효)
+    weatherCache.set(cacheKey, data, 5 * 60 * 1000);
+    
+    return data;
+  });
+}
+
+export async function getWeatherForecast(city: string, useCache: boolean = true): Promise<ForecastData> {
   const cacheKey = getCacheKey('forecast', city);
   
-  // 캐시에서 데이터 확인
-  const cachedData = weatherCache.get<ForecastData>(cacheKey);
-  if (cachedData) {
-    console.log('Using cached forecast data for', city);
-    return cachedData;
+  // 캐시에서 데이터 확인 (캐시 사용이 활성화된 경우에만)
+  if (useCache) {
+    const cachedData = weatherCache.get<ForecastData>(cacheKey);
+    if (cachedData) {
+      console.log('Using cached forecast data for', city);
+      return cachedData;
+    }
   }
 
-  const response = await fetch(
-    `${API_BASE_URL}?city=${encodeURIComponent(city)}&type=forecast`
-  );
+  return retryWithBackoff(async () => {
+    const response = await fetch(
+      `${API_BASE_URL}?city=${encodeURIComponent(city)}&type=forecast`
+    );
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `Failed to fetch forecast data: ${response.statusText}`);
-  }
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to fetch forecast data: ${response.statusText}`);
+    }
 
-  const data = await response.json();
-  
-  // 캐시에 저장 (10분간 유효)
-  weatherCache.set(cacheKey, data, 10 * 60 * 1000);
-  
-  return data;
+    const data = await response.json();
+    
+    // 캐시에 저장 (10분간 유효)
+    weatherCache.set(cacheKey, data, 10 * 60 * 1000);
+    
+    return data;
+  });
 }
 
 export function getWeatherIconUrl(iconCode: string): string {
